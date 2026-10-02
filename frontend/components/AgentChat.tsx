@@ -1,13 +1,23 @@
 "use client"
 
 import { FormEvent, KeyboardEvent, useEffect, useRef, useState } from "react"
-import { askDevPilot } from "@/lib/api"
+import {
+  askDevPilot,
+  decideDevPilotApproval,
+  type ApprovalRequest,
+  type ChatResult
+} from "@/lib/api"
 import { Icon } from "@/components/Icon"
 
 type Message = {
   id: string
-  role: "user" | "assistant"
+  role: "user" | "assistant" | "event"
   text: string
+}
+
+type PendingApproval = {
+  approvalId: string
+  approvals: ApprovalRequest[]
 }
 
 const suggestions = [
@@ -18,26 +28,53 @@ const suggestions = [
 
 export function AgentChat({
   projectId,
-  projectName
+  projectName,
+  onProjectUpdated
 }: {
   projectId: string
   projectName: string
+  onProjectUpdated?: () => void
 }) {
   const [input, setInput] = useState("")
   const [messages, setMessages] = useState<Message[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [pendingApproval, setPendingApproval] = useState<PendingApproval | null>(null)
+  const [resolvingRequestId, setResolvingRequestId] = useState<string | null>(null)
   const messageEndRef = useRef<HTMLDivElement>(null)
   const messageIdRef = useRef(0)
 
   useEffect(() => {
-    if (messages.length === 0 && !loading) return
+    if (messages.length === 0 && !loading && !pendingApproval) return
     messageEndRef.current?.scrollIntoView({ behavior: "smooth" })
-  }, [messages, loading])
+  }, [messages, loading, pendingApproval])
+
+  function handleChatResult(result: ChatResult) {
+    if (result.status === "approval_required") {
+      if (!result.approval_id || result.approvals.length === 0) {
+        throw new Error("The approval request is incomplete")
+      }
+      setPendingApproval({
+        approvalId: result.approval_id,
+        approvals: result.approvals
+      })
+      return
+    }
+
+    setPendingApproval(null)
+    setMessages((current) => [
+      ...current,
+      {
+        id: `assistant-${++messageIdRef.current}`,
+        role: "assistant",
+        text: result.answer || "Done"
+      }
+    ])
+  }
 
   async function sendMessage(question: string) {
     const cleanQuestion = question.trim()
-    if (!cleanQuestion || loading) return
+    if (!cleanQuestion || loading || pendingApproval) return
 
     const userMessage: Message = {
       id: `user-${++messageIdRef.current}`,
@@ -51,15 +88,8 @@ export function AgentChat({
     setLoading(true)
 
     try {
-      const answer = await askDevPilot(cleanQuestion, projectId)
-      setMessages((current) => [
-        ...current,
-        {
-          id: `assistant-${++messageIdRef.current}`,
-          role: "assistant",
-          text: answer
-        }
-      ])
+      const result = await askDevPilot(cleanQuestion, projectId)
+      handleChatResult(result)
     } catch (requestError) {
       const message = requestError instanceof Error
         ? requestError.message
@@ -68,6 +98,55 @@ export function AgentChat({
     } finally {
       setLoading(false)
     }
+  }
+
+  async function decideApproval(
+    approval: ApprovalRequest,
+    decision: "approve" | "reject"
+  ) {
+    if (!pendingApproval || resolvingRequestId) return
+
+    setResolvingRequestId(approval.request_id)
+    setError(null)
+
+    try {
+      const result = await decideDevPilotApproval(
+        pendingApproval.approvalId,
+        approval.request_id,
+        decision
+      )
+      setMessages((current) => [
+        ...current,
+        {
+          id: `event-${++messageIdRef.current}`,
+          role: "event",
+          text: decision === "approve" ? "Action approved" : "Action rejected"
+        }
+      ])
+      if (decision === "approve") onProjectUpdated?.()
+      handleChatResult(result)
+    } catch (requestError) {
+      const message = requestError instanceof Error
+        ? requestError.message
+        : "The approval could not be completed"
+      setPendingApproval(null)
+      setError(message)
+      if (decision === "approve") onProjectUpdated?.()
+    } finally {
+      setResolvingRequestId(null)
+    }
+  }
+
+  function formatArgument(value: unknown) {
+    if (typeof value === "string") return value.replaceAll("_", " ")
+    if (value === null || value === undefined || value === "") return "Not set"
+    return String(value)
+  }
+
+  function formatArgumentName(name: string) {
+    return name
+      .replaceAll("_", " ")
+      .replace(/^./, (letter) => letter.toUpperCase())
   }
 
   function submit(event: FormEvent<HTMLFormElement>) {
@@ -122,13 +201,58 @@ export function AgentChat({
         ) : (
           messages.map((message) => (
             <article className={`message message-${message.role}`} key={message.id}>
-              <div className="messageLabel">
-                {message.role === "user" ? "You" : "DevPilot"}
-              </div>
+              {message.role !== "event" && (
+                <div className="messageLabel">
+                  {message.role === "user" ? "You" : "DevPilot"}
+                </div>
+              )}
               <p>{message.text}</p>
             </article>
           ))
         )}
+
+        {pendingApproval && pendingApproval.approvals.map((approval) => (
+          <article className="approvalCard" key={approval.request_id}>
+            <div className="approvalHeader">
+              <span className="approvalIcon"><Icon name="circleAlert" size={18} /></span>
+              <div>
+                <span>Approval required</span>
+                <h3>{approval.title}</h3>
+                <p>{approval.description}</p>
+              </div>
+            </div>
+
+            <dl className="approvalDetails">
+              {Object.entries(approval.arguments)
+                .filter(([name]) => name !== "project_id")
+                .map(([name, value]) => (
+                  <div key={name}>
+                    <dt>{formatArgumentName(name)}</dt>
+                    <dd>{formatArgument(value)}</dd>
+                  </div>
+                ))}
+            </dl>
+
+            <div className="approvalActions">
+              <button
+                className="rejectButton"
+                disabled={resolvingRequestId !== null}
+                onClick={() => void decideApproval(approval, "reject")}
+                type="button"
+              >
+                Reject
+              </button>
+              <button
+                className="approveButton"
+                disabled={resolvingRequestId !== null}
+                onClick={() => void decideApproval(approval, "approve")}
+                type="button"
+              >
+                {resolvingRequestId === approval.request_id ? "Applying..." : "Approve action"}
+              </button>
+            </div>
+          </article>
+        ))}
 
         {loading && (
           <div className="thinkingState" role="status">
@@ -150,24 +274,28 @@ export function AgentChat({
         <div className="composerField">
           <textarea
             aria-label="Message DevPilot"
-            disabled={loading}
+            disabled={loading || pendingApproval !== null || resolvingRequestId !== null}
             maxLength={2000}
             onChange={(event) => setInput(event.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Ask about this project"
+            placeholder={pendingApproval ? "Review the pending action first" : "Ask about this project"}
             rows={2}
             value={input}
           />
           <button
             aria-label="Send message"
             className="sendButton"
-            disabled={!input.trim() || loading}
+            disabled={!input.trim() || loading || pendingApproval !== null || resolvingRequestId !== null}
             type="submit"
           >
             <Icon name="arrowUp" size={18} />
           </button>
         </div>
-        <p>Enter to send, Shift + Enter for a new line</p>
+        <p>
+          {pendingApproval
+            ? "Approve or reject the action to continue"
+            : "Enter to send, Shift + Enter for a new line"}
+        </p>
       </form>
     </section>
   )

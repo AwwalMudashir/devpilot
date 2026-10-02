@@ -56,6 +56,21 @@ export type ProjectActivity = {
   open_pull_requests: PullRequest[]
 }
 
+export type ApprovalRequest = {
+  request_id: string
+  tool_name: string
+  title: string
+  description: string
+  arguments: Record<string, unknown>
+}
+
+export type ChatResult = {
+  status: "completed" | "approval_required"
+  answer: string | null
+  approval_id: string | null
+  approvals: ApprovalRequest[]
+}
+
 export class ApiError extends Error {
   status: number
 
@@ -109,10 +124,19 @@ export function getProjectActivity(projectId: string) {
 }
 
 export async function askDevPilot(message: string, projectId: string) {
-  const data = await request<{ answer: string }>("/chat", {
+  return request<ChatResult>("/chat", {
     method: "POST",
     body: JSON.stringify({ message, project_id: projectId })
   })
+}
 
-  return data.answer
+export function decideDevPilotApproval(
+  approvalId: string,
+  requestId: string,
+  decision: "approve" | "reject"
+) {
+  return request<ChatResult>(`/chat/approvals/${approvalId}`, {
+    method: "POST",
+    body: JSON.stringify({ request_id: requestId, decision })
+  })
 }

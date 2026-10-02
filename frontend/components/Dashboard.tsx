@@ -520,6 +520,7 @@ export function Dashboard() {
 
             <AgentChat
               key={selectedProject.id}
+              onProjectUpdated={() => void loadWorkspace()}
               projectId={selectedProject.id}
               projectName={selectedProject.name}
             />
