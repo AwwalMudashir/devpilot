@@ -3,6 +3,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from services.agent_api.approvals import WRITE_TOOL_DETAILS, WRITE_TOOL_NAMES
 from services.agent_api.scoped_mcp import ProjectScopedMCPServer
 from services.mcp_server import server
 
@@ -74,12 +75,14 @@ class FakeSupabase:
                 "id": "task-a",
                 "project_id": "project-a",
                 "title": "Project A task",
+                "description": "Project A description",
                 "status": "todo",
             },
             "task-b": {
                 "id": "task-b",
                 "project_id": "project-b",
                 "title": "Project B task",
+                "description": "Project B description",
                 "status": "todo",
             },
         }
@@ -137,6 +140,46 @@ class ProjectScopeTests(unittest.TestCase):
 
         self.assertEqual(updated["status"], "in_progress")
 
+    def test_description_update_changes_task_in_active_project(self):
+        updated = server.update_task_description(
+            "task-b",
+            "  Clarify the acceptance criteria  ",
+            self.context,
+        )
+
+        self.assertEqual(
+            updated["description"],
+            "Clarify the acceptance criteria",
+        )
+
+    def test_description_update_cannot_cross_project_boundary(self):
+        with self.assertRaisesRegex(ValueError, "active project"):
+            server.update_task_description(
+                "task-a",
+                "This must not be applied",
+                self.context,
+            )
+
+        self.assertEqual(
+            self.database.tasks["task-a"]["description"],
+            "Project A description",
+        )
+
+    def test_description_update_requires_meaningful_content(self):
+        with self.assertRaisesRegex(ValueError, "cannot be empty"):
+            server.update_task_description(
+                "task-b",
+                "   ",
+                self.context,
+            )
+
+    def test_description_update_requires_approval(self):
+        self.assertIn("update_task_description", WRITE_TOOL_NAMES)
+        self.assertEqual(
+            WRITE_TOOL_DETAILS["update_task_description"][0],
+            "Update task description",
+        )
+
     def test_read_returns_only_active_project_tasks(self):
         tasks = server.get_project_tasks(self.context)
 
@@ -149,6 +192,16 @@ class ProjectScopeTests(unittest.TestCase):
         for tool in project_tools:
             properties = tool.input_schema.get("properties", {})
             self.assertNotIn("project_id", properties, tool.name)
+
+        description_tool = next(
+            tool for tool in tools
+            if tool.name == "update_task_description"
+        )
+        description_schema = description_tool.input_schema["properties"][
+            "description"
+        ]
+        self.assertEqual(description_schema["minLength"], 1)
+        self.assertEqual(description_schema["maxLength"], 2000)
 
     def test_agent_adapter_applies_immutable_project_scope(self):
         adapter = ProjectScopedMCPServer(

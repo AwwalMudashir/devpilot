@@ -13,7 +13,11 @@ from postgrest.exceptions import APIError
 
 from agents import RunState, Runner
 from services.agent_api.agent import build_agent
-from services.agent_api.approvals import approval_store
+from services.agent_api.approvals import (
+    WRITE_TOOL_DETAILS,
+    WRITE_TOOL_NAMES,
+    approval_store,
+)
 from services.agent_api.chat_history import (
     build_agent_conversation,
     list_project_chat_messages,
@@ -71,9 +75,6 @@ logger = logging.getLogger(__name__)
 GITHUB_APP_SLUG = os.getenv("GITHUB_APP_SLUG", "")
 GITHUB_APP_CLIENT_ID = os.getenv("GITHUB_APP_CLIENT_ID", "")
 
-WRITE_TOOL_NAMES = ["create_task", "update_task_status"]
-
-
 # FastAPI application
 app = FastAPI(
     title="DevPilot Agent API",
@@ -129,11 +130,10 @@ def get_tool_arguments(raw_item: Any) -> dict[str, Any]:
 
 
 def describe_approval(tool_name: str) -> tuple[str, str]:
-    if tool_name == "create_task":
-        return "Create task", "Add this task to the selected project"
-    if tool_name == "update_task_status":
-        return "Update task status", "Change the status of this task"
-    return "Review action", "Review this project change before it runs"
+    return WRITE_TOOL_DETAILS.get(
+        tool_name,
+        ("Review action", "Review this project change before it runs"),
+    )
 
 
 async def build_chat_response(

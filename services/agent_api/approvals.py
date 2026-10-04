@@ -8,6 +8,22 @@ from uuid import uuid4
 APPROVAL_TTL_SECONDS = 10 * 60
 MAX_PENDING_APPROVALS = 100
 
+WRITE_TOOL_DETAILS = {
+    "create_task": (
+        "Create task",
+        "Add this task to the selected project",
+    ),
+    "update_task_status": (
+        "Update task status",
+        "Change the status of this task",
+    ),
+    "update_task_description": (
+        "Update task description",
+        "Replace the description of this task",
+    ),
+}
+WRITE_TOOL_NAMES = list(WRITE_TOOL_DETAILS)
+
 
 @dataclass
 class PendingApproval:

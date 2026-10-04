@@ -2,7 +2,8 @@ import hmac
 import os
 from mcp.server import MCPServer
 from mcp.server.mcpserver import Context
-from typing import Literal
+from pydantic import Field
+from typing import Annotated, Literal
 from services.mcp_server.database import supabase
 from datetime import date
 from starlette.responses import JSONResponse
@@ -18,6 +19,7 @@ MCP_INTERNAL_SECRET = os.getenv(
 mcp = MCPServer("DevPilot MCP")
 Status = Literal["todo", "in_progress", "blocked", "done"]
 Priority = Literal["low", "medium", "high", "critical"]
+TaskDescription = Annotated[str, Field(min_length=1, max_length=2000)]
 
 
 def get_active_project_id(ctx: Context) -> str:
@@ -117,6 +119,30 @@ def update_task_status(
     rows = (
         supabase.table("tasks")
         .update({"status": status})
+        .eq("id", task_id)
+        .eq("project_id", project_id)
+        .execute()
+        .data
+    )
+    if not rows:
+        raise ValueError("Task not found in the active project")
+    return rows[0]
+
+
+@mcp.tool()
+def update_task_description(
+    task_id: str,
+    description: TaskDescription,
+    ctx: Context,
+) -> dict:
+    """Update the description of an existing project task."""
+    project_id = get_active_project_id(ctx)
+    clean_description = description.strip()
+    if not clean_description:
+        raise ValueError("Task description cannot be empty")
+    rows = (
+        supabase.table("tasks")
+        .update({"description": clean_description})
         .eq("id", task_id)
         .eq("project_id", project_id)
         .execute()
