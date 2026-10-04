@@ -230,6 +230,8 @@ uvicorn services.agent_api.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
 Verify it at `http://127.0.0.1:8000/health`.
+The endpoint accepts both `GET` and `HEAD`, so it can be used by browser checks,
+Render health checks, and uptime monitors.
 
 ### Start the frontend
 

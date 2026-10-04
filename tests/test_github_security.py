@@ -16,6 +16,20 @@ from services.mcp_server.server import app as mcp_app
 
 
 class GitHubSecurityTests(unittest.TestCase):
+    def test_health_endpoint_accepts_get_and_head(self):
+        client = TestClient(app)
+
+        get_response = client.get("/health")
+        head_response = client.head("/health")
+
+        self.assertEqual(get_response.status_code, 200)
+        self.assertEqual(
+            get_response.json()["service"],
+            "devpilot-agent-api",
+        )
+        self.assertEqual(head_response.status_code, 204)
+        self.assertEqual(head_response.content, b"")
+
     def test_oauth_state_accepts_original_and_rejects_tampering(self):
         state = create_oauth_state()
         verify_oauth_state(state, state)

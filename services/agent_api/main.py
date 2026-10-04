@@ -186,6 +186,11 @@ def health():
     }
 
 
+@app.head("/health", status_code=204)
+def health_head():
+    return Response(status_code=204)
+
+
 @app.get("/auth/github")
 @app.get("/auth/github/start")
 def start_github_connection():
