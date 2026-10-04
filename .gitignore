@@ -3,6 +3,8 @@
 
 # Environment variables
 .env
+secrets/
+*.pem
 
 # Python cache
 __pycache__/

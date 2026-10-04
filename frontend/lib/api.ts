@@ -1,6 +1,17 @@
-const API_BASE_URL = (
-  process.env.NEXT_PUBLIC_AGENT_API_URL || "http://localhost:8000"
-).replace(/\/$/, "")
+const API_BASE_URL = "/api/devpilot"
+
+export type AuthUser = {
+  id: string
+  github_user_id: number
+  github_login: string
+  github_name: string | null
+  avatar_url: string | null
+}
+
+export type AuthSession = {
+  authenticated: boolean
+  user: AuthUser | null
+}
 
 export type TaskStatus = "todo" | "in_progress" | "blocked" | "done"
 export type TaskPriority = "low" | "medium" | "high" | "critical"
@@ -71,6 +82,13 @@ export type ChatResult = {
   approvals: ApprovalRequest[]
 }
 
+export type ProjectChatMessage = {
+  id: string
+  role: "user" | "assistant"
+  content: string
+  created_at: string
+}
+
 export class ApiError extends Error {
   status: number
 
@@ -84,6 +102,7 @@ export class ApiError extends Error {
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     cache: "no-store",
+    credentials: "include",
     ...options,
     headers: {
       "Content-Type": "application/json",
@@ -111,6 +130,18 @@ export function getProjects() {
   return request<Project[]>("/projects")
 }
 
+export function syncProjects() {
+  return request<Project[]>("/projects/sync", { method: "POST" })
+}
+
+export function getAuthSession() {
+  return request<AuthSession>("/auth/session")
+}
+
+export function signOut() {
+  return request<{ status: string }>("/auth/logout", { method: "POST" })
+}
+
 export function getProjectSummary(projectId: string) {
   return request<ProjectSummary>(`/projects/${projectId}/summary`)
 }
@@ -119,8 +150,27 @@ export function getProjectTasks(projectId: string) {
   return request<ProjectTask[]>(`/projects/${projectId}/tasks`)
 }
 
+export function createProjectTask(
+  projectId: string,
+  task: {
+    title: string
+    description: string | null
+    priority: TaskPriority
+    due_date: string | null
+  }
+) {
+  return request<ProjectTask>(`/projects/${projectId}/tasks`, {
+    method: "POST",
+    body: JSON.stringify(task)
+  })
+}
+
 export function getProjectActivity(projectId: string) {
   return request<ProjectActivity>(`/projects/${projectId}/activity`)
+}
+
+export function getProjectChatMessages(projectId: string) {
+  return request<ProjectChatMessage[]>(`/projects/${projectId}/chat/messages`)
 }
 
 export async function askDevPilot(message: string, projectId: string) {

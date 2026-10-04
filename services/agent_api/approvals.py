@@ -13,6 +13,7 @@ MAX_PENDING_APPROVALS = 100
 class PendingApproval:
     state_json: dict
     project_id: str
+    user_id: str
     request_indexes: dict[str, int]
     created_at: float
 
@@ -35,6 +36,7 @@ class ApprovalStore:
         self,
         state_json: dict,
         project_id: str,
+        user_id: str,
         interruption_count: int,
     ) -> tuple[str, list[str]]:
         now = monotonic()
@@ -56,6 +58,7 @@ class ApprovalStore:
             self._items[approval_id] = PendingApproval(
                 state_json=copy.deepcopy(state_json),
                 project_id=project_id,
+                user_id=user_id,
                 request_indexes=request_indexes,
                 created_at=now,
             )
@@ -74,6 +77,7 @@ class ApprovalStore:
         return PendingApproval(
             state_json=copy.deepcopy(item.state_json),
             project_id=item.project_id,
+            user_id=item.user_id,
             request_indexes=dict(item.request_indexes),
             created_at=item.created_at,
         )

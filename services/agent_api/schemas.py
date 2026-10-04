@@ -23,8 +23,22 @@ class ChatResponse(BaseModel):
     approvals: list[ApprovalRequest] = Field(default_factory=list)
 
 
+class ChatHistoryMessage(BaseModel):
+    id: str
+    role: Literal["user", "assistant"]
+    content: str
+    created_at: str
+
+
 class ApprovalDecisionRequest(BaseModel):
     request_id: str = Field(min_length=1)
     decision: Literal["approve", "reject"]
+
+
+class TaskCreateRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=160)
+    description: str | None = Field(default=None, max_length=2000)
+    priority: Literal["low", "medium", "high", "critical"] = "medium"
+    due_date: str | None = None
 
 

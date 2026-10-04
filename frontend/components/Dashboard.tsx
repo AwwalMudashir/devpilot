@@ -3,11 +3,14 @@
 import { useEffect, useMemo, useState } from "react"
 import { AgentChat } from "@/components/AgentChat"
 import { Icon, type IconName } from "@/components/Icon"
+import { ProjectPicker } from "@/components/ProjectPicker"
+import { TaskCreateDialog } from "@/components/TaskCreateDialog"
 import {
   getProjectActivity,
   getProjects,
   getProjectSummary,
   getProjectTasks,
+  type AuthUser,
   type Project,
   type ProjectActivity,
   type ProjectSummary,
@@ -91,7 +94,13 @@ function WorkspaceSkeleton() {
   )
 }
 
-export function Dashboard() {
+export function Dashboard({
+  onSignOut,
+  user
+}: {
+  onSignOut: () => void
+  user: AuthUser
+}) {
   const [projects, setProjects] = useState<Project[]>([])
   const [selectedProjectId, setSelectedProjectId] = useState("")
   const [summary, setSummary] = useState<ProjectSummary | null>(null)
@@ -104,6 +113,9 @@ export function Dashboard() {
   const [workspaceError, setWorkspaceError] = useState<string | null>(null)
   const [activityError, setActivityError] = useState(false)
   const [lastUpdated, setLastUpdated] = useState<string | null>(null)
+  const [taskDialogOpen, setTaskDialogOpen] = useState(false)
+  const [chatExpanded, setChatExpanded] = useState(false)
+  const [composeRequest, setComposeRequest] = useState<{ id: number; text: string } | null>(null)
 
   useEffect(() => {
     let active = true
@@ -114,7 +126,11 @@ export function Dashboard() {
         if (!active) return
         setProjects(data)
         if (data.length > 0) setLoadingWorkspace(true)
-        setSelectedProjectId((current) => current || data[0]?.id || "")
+        setSelectedProjectId((current) => {
+          if (current) return current
+          const savedProjectId = window.localStorage.getItem("devpilot:selected-project")
+          return data.find((project) => project.id === savedProjectId)?.id || data[0]?.id || ""
+        })
       } catch (error) {
         if (!active) return
         setProjectError(error instanceof Error ? error.message : "Projects could not be loaded")
@@ -126,6 +142,17 @@ export function Dashboard() {
     void loadProjects()
     return () => { active = false }
   }, [])
+
+  useEffect(() => {
+    if (!chatExpanded) return
+
+    function restoreDashboard(event: KeyboardEvent) {
+      if (event.key === "Escape") setChatExpanded(false)
+    }
+
+    window.addEventListener("keydown", restoreDashboard)
+    return () => window.removeEventListener("keydown", restoreDashboard)
+  }, [chatExpanded])
 
   async function loadWorkspace() {
     if (!selectedProjectId) return
@@ -226,6 +253,13 @@ export function Dashboard() {
     : 0
 
   function scrollToSection(id: string) {
+    if (chatExpanded && id !== "assistant") {
+      setChatExpanded(false)
+      requestAnimationFrame(() => {
+        document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" })
+      })
+      return
+    }
     document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" })
   }
 
@@ -238,6 +272,32 @@ export function Dashboard() {
     setActivity(emptyActivity)
     setTaskFilter("all")
     setSelectedProjectId(projectId)
+    window.localStorage.setItem("devpilot:selected-project", projectId)
+  }
+
+  function handleTaskCreated(task: ProjectTask) {
+    setTasks((current) => [...current, task])
+    setSummary((current) => current ? {
+      ...current,
+      task_counts: {
+        ...current.task_counts,
+        todo: current.task_counts.todo + 1
+      }
+    } : current)
+    setTaskFilter("all")
+  }
+
+  function composeTaskWithDevPilot() {
+    setComposeRequest({
+      id: Date.now(),
+      text: "Help me create a task for this project"
+    })
+    if (window.matchMedia("(max-width: 1320px)").matches) {
+      document.getElementById("assistant")?.scrollIntoView({
+        behavior: "smooth",
+        block: "start"
+      })
+    }
   }
 
   if (loadingProjects) return <WorkspaceSkeleton />
@@ -263,9 +323,16 @@ export function Dashboard() {
     return (
       <main className="fullPageState">
         <div className="stateCard">
-          <span className="stateIcon"><Icon name="list" size={24} /></span>
-          <h1>No projects yet</h1>
-          <p>Add a project to Supabase and it will appear here.</p>
+          <span className="stateIcon"><Icon name="github" size={24} /></span>
+          <h1>No repositories selected</h1>
+          <p>Choose the GitHub repositories you want DevPilot to access.</p>
+          <a className="stateAction" href="/api/devpilot/auth/github/manage">
+            <Icon name="github" size={17} />
+            Choose repositories
+          </a>
+          <button className="stateSecondaryAction" onClick={onSignOut} type="button">
+            Sign out
+          </button>
         </div>
       </main>
     )
@@ -276,7 +343,7 @@ export function Dashboard() {
     : "Repository not linked"
 
   return (
-    <div className="appShell">
+    <div className={`appShell${chatExpanded ? " chatFocus" : ""}`}>
       <aside className="sidebar">
         <div className="brand">
           <span className="brandMark"><Icon name="command" size={22} /></span>
@@ -287,20 +354,12 @@ export function Dashboard() {
         </div>
 
         <div className="sidebarSection">
-          <label htmlFor="project-select">Project</label>
-          <div className="selectWrap">
-            <span className="projectInitial">{selectedProject.name.charAt(0).toUpperCase()}</span>
-            <select
-              id="project-select"
-              onChange={(event) => changeProject(event.target.value)}
-              value={selectedProjectId}
-            >
-              {projects.map((project) => (
-                <option key={project.id} value={project.id}>{project.name}</option>
-              ))}
-            </select>
-            <Icon name="chevronDown" size={16} />
-          </div>
+          <span className="sidebarLabel">Project</span>
+          <ProjectPicker
+            onChange={changeProject}
+            projects={projects}
+            selectedProjectId={selectedProjectId}
+          />
         </div>
 
         <nav className="sideNav" aria-label="Workspace navigation">
@@ -324,12 +383,17 @@ export function Dashboard() {
         </nav>
 
         <div className="sidebarFooter">
-          <div className="connectionState">
-            <span className="statusDot" />
+          <div className="accountSummary">
+            <span className="accountInitial">
+              {user.github_login.charAt(0).toUpperCase()}
+            </span>
             <div>
-              <strong>Services connected</strong>
-              <span>Agent API and project data</span>
+              <strong>{user.github_name || user.github_login}</strong>
+              <span>@{user.github_login}</span>
             </div>
+            <button aria-label="Sign out" onClick={onSignOut} title="Sign out" type="button">
+              <Icon name="logOut" size={17} />
+            </button>
           </div>
         </div>
       </aside>
@@ -339,18 +403,21 @@ export function Dashboard() {
           <span className="brandMark"><Icon name="command" size={20} /></span>
           <strong>DevPilot</strong>
         </div>
-        <div className="mobileSelect">
-          <select
-            aria-label="Select project"
-            onChange={(event) => changeProject(event.target.value)}
-            value={selectedProjectId}
-          >
-            {projects.map((project) => (
-              <option key={project.id} value={project.id}>{project.name}</option>
-            ))}
-          </select>
-          <Icon name="chevronDown" size={15} />
-        </div>
+        <ProjectPicker
+          compact
+          onChange={changeProject}
+          projects={projects}
+          selectedProjectId={selectedProjectId}
+        />
+        <button
+          aria-label="Sign out"
+          className="mobileSignOut"
+          onClick={onSignOut}
+          title="Sign out"
+          type="button"
+        >
+          <Icon name="logOut" size={18} />
+        </button>
       </div>
 
       <main className="mainContent">
@@ -392,7 +459,7 @@ export function Dashboard() {
             <button onClick={() => void loadWorkspace()} type="button">Retry</button>
           </div>
         ) : (
-          <div className="workspaceGrid">
+          <div className={`workspaceGrid${chatExpanded ? " workspaceGrid-chatExpanded" : ""}`}>
             <div className="dashboardColumn">
               <section className="metricGrid" aria-label="Project metrics">
                 <MetricCard icon="list" label="Total tasks" note={`${completion}% complete`} value={totalTasks} />
@@ -419,7 +486,13 @@ export function Dashboard() {
                     <h2>Tasks</h2>
                     <p>Current work across the project</p>
                   </div>
-                  <span className="panelCount">{filteredTasks.length} shown</span>
+                  <div className="panelHeaderActions">
+                    <span className="panelCount">{filteredTasks.length} shown</span>
+                    <button className="compactButton" onClick={() => setTaskDialogOpen(true)} type="button">
+                      <Icon name="plus" size={15} />
+                      New task
+                    </button>
+                  </div>
                 </div>
 
                 <div className="filterTabs" role="tablist" aria-label="Filter tasks">
@@ -438,7 +511,23 @@ export function Dashboard() {
                 </div>
 
                 <div className="taskList">
-                  {filteredTasks.length === 0 ? (
+                  {tasks.length === 0 ? (
+                    <div className="emptyPanel taskEmptyState">
+                      <span className="emptyPanelIcon"><Icon name="tasks" size={23} /></span>
+                      <strong>No tasks yet</strong>
+                      <p>Create the first task manually or ask DevPilot to prepare it with you.</p>
+                      <div className="emptyTaskActions">
+                        <button className="primaryButton" onClick={() => setTaskDialogOpen(true)} type="button">
+                          <Icon name="plus" size={16} />
+                          Create task
+                        </button>
+                        <button onClick={composeTaskWithDevPilot} type="button">
+                          <Icon name="spark" size={16} />
+                          Create with DevPilot
+                        </button>
+                      </div>
+                    </div>
+                  ) : filteredTasks.length === 0 ? (
                     <div className="emptyPanel">
                       <Icon name="check" size={22} />
                       <strong>No tasks in this view</strong>
@@ -519,14 +608,26 @@ export function Dashboard() {
             </div>
 
             <AgentChat
+              composeRequest={composeRequest}
+              expanded={chatExpanded}
               key={selectedProject.id}
               onProjectUpdated={() => void loadWorkspace()}
+              onToggleExpanded={() => setChatExpanded((current) => !current)}
               projectId={selectedProject.id}
               projectName={selectedProject.name}
             />
           </div>
         )}
       </main>
+
+      {taskDialogOpen && (
+        <TaskCreateDialog
+          onClose={() => setTaskDialogOpen(false)}
+          onCreated={handleTaskCreated}
+          projectId={selectedProject.id}
+          projectName={selectedProject.name}
+        />
+      )}
     </div>
   )
 }

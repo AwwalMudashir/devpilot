@@ -4,10 +4,12 @@ import { FormEvent, KeyboardEvent, useEffect, useRef, useState } from "react"
 import {
   askDevPilot,
   decideDevPilotApproval,
+  getProjectChatMessages,
   type ApprovalRequest,
   type ChatResult
 } from "@/lib/api"
 import { Icon } from "@/components/Icon"
+import { MarkdownMessage } from "@/components/MarkdownMessage"
 
 type Message = {
   id: string
@@ -26,28 +28,84 @@ const suggestions = [
   "Which tasks should I handle next?"
 ]
 
+const MAX_CHAT_MESSAGES = 40
+
+function keepLatestMessages(messages: Message[]) {
+  return messages.slice(-MAX_CHAT_MESSAGES)
+}
+
 export function AgentChat({
   projectId,
   projectName,
-  onProjectUpdated
+  onProjectUpdated,
+  expanded = false,
+  onToggleExpanded,
+  composeRequest
 }: {
   projectId: string
   projectName: string
   onProjectUpdated?: () => void
+  expanded?: boolean
+  onToggleExpanded?: () => void
+  composeRequest?: { id: number; text: string } | null
 }) {
   const [input, setInput] = useState("")
   const [messages, setMessages] = useState<Message[]>([])
+  const [loadingHistory, setLoadingHistory] = useState(true)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [pendingApproval, setPendingApproval] = useState<PendingApproval | null>(null)
   const [resolvingRequestId, setResolvingRequestId] = useState<string | null>(null)
-  const messageEndRef = useRef<HTMLDivElement>(null)
+  const messageListRef = useRef<HTMLDivElement>(null)
+  const inputRef = useRef<HTMLTextAreaElement>(null)
   const messageIdRef = useRef(0)
 
   useEffect(() => {
-    if (messages.length === 0 && !loading && !pendingApproval) return
-    messageEndRef.current?.scrollIntoView({ behavior: "smooth" })
-  }, [messages, loading, pendingApproval])
+    let active = true
+
+    void getProjectChatMessages(projectId)
+      .then((history) => {
+        if (!active) return
+        setMessages(history.map((message) => ({
+          id: `history-${message.id}`,
+          role: message.role,
+          text: message.content
+        })))
+      })
+      .catch((historyError) => {
+        if (!active) return
+        setError(
+          historyError instanceof Error
+            ? historyError.message
+            : "This project conversation could not be loaded"
+        )
+      })
+      .finally(() => {
+        if (active) setLoadingHistory(false)
+      })
+
+    return () => { active = false }
+  }, [projectId])
+
+  useEffect(() => {
+    if (messages.length === 0 && !loading && !pendingApproval && !loadingHistory) return
+    const messageList = messageListRef.current
+    if (!messageList) return
+
+    messageList.scrollTo({
+      top: messageList.scrollHeight,
+      behavior: "smooth"
+    })
+  }, [messages, loading, pendingApproval, loadingHistory])
+
+  useEffect(() => {
+    if (!composeRequest) return
+    const frame = requestAnimationFrame(() => {
+      setInput(composeRequest.text)
+      inputRef.current?.focus()
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [composeRequest])
 
   function handleChatResult(result: ChatResult) {
     if (result.status === "approval_required") {
@@ -62,19 +120,19 @@ export function AgentChat({
     }
 
     setPendingApproval(null)
-    setMessages((current) => [
+    setMessages((current) => keepLatestMessages([
       ...current,
       {
         id: `assistant-${++messageIdRef.current}`,
         role: "assistant",
         text: result.answer || "Done"
       }
-    ])
+    ]))
   }
 
   async function sendMessage(question: string) {
     const cleanQuestion = question.trim()
-    if (!cleanQuestion || loading || pendingApproval) return
+    if (!cleanQuestion || loading || loadingHistory || pendingApproval) return
 
     const userMessage: Message = {
       id: `user-${++messageIdRef.current}`,
@@ -84,7 +142,7 @@ export function AgentChat({
 
     setInput("")
     setError(null)
-    setMessages((current) => [...current, userMessage])
+    setMessages((current) => keepLatestMessages([...current, userMessage]))
     setLoading(true)
 
     try {
@@ -115,14 +173,14 @@ export function AgentChat({
         approval.request_id,
         decision
       )
-      setMessages((current) => [
+      setMessages((current) => keepLatestMessages([
         ...current,
         {
           id: `event-${++messageIdRef.current}`,
           role: "event",
           text: decision === "approve" ? "Action approved" : "Action rejected"
         }
-      ])
+      ]))
       if (decision === "approve") onProjectUpdated?.()
       handleChatResult(result)
     } catch (requestError) {
@@ -162,7 +220,11 @@ export function AgentChat({
   }
 
   return (
-    <section className="assistantPanel" id="assistant" aria-label="DevPilot assistant">
+    <section
+      className={`assistantPanel${expanded ? " assistantPanel-expanded" : ""}`}
+      id="assistant"
+      aria-label="DevPilot assistant"
+    >
       <div className="assistantHeader">
         <div className="assistantIdentity">
           <span className="assistantMark"><Icon name="bot" size={19} /></span>
@@ -171,13 +233,35 @@ export function AgentChat({
               <h2>Ask DevPilot</h2>
               <span className="statusDot" aria-label="Ready" />
             </div>
-            <p>Answers use the selected project&apos;s live data</p>
+            <p>Project chat, latest 40 messages</p>
           </div>
         </div>
+        {onToggleExpanded && (
+          <button
+            aria-label={expanded ? "Restore dashboard view" : "Maximize assistant"}
+            aria-pressed={expanded}
+            className="assistantSizeButton"
+            onClick={onToggleExpanded}
+            title={expanded ? "Restore dashboard view" : "Maximize assistant"}
+            type="button"
+          >
+            <Icon name={expanded ? "minimize" : "maximize"} size={18} />
+          </button>
+        )}
       </div>
 
-      <div className="messageList" aria-live="polite">
-        {messages.length === 0 ? (
+      <div
+        aria-busy={loading || loadingHistory}
+        aria-live="polite"
+        className="messageList"
+        ref={messageListRef}
+      >
+        {loadingHistory ? (
+          <div className="chatHistoryLoading" role="status">
+            <Icon className="spinning" name="refresh" size={19} />
+            <span>Loading this project&apos;s conversation</span>
+          </div>
+        ) : messages.length === 0 ? (
           <div className="chatWelcome">
             <span className="chatWelcomeIcon"><Icon name="spark" size={22} /></span>
             <h3>What do you need to know?</h3>
@@ -206,7 +290,13 @@ export function AgentChat({
                   {message.role === "user" ? "You" : "DevPilot"}
                 </div>
               )}
-              <p>{message.text}</p>
+              {message.role === "assistant" ? (
+                <div className="messageBody">
+                  <MarkdownMessage>{message.text}</MarkdownMessage>
+                </div>
+              ) : (
+                <p>{message.text}</p>
+              )}
             </article>
           ))
         )}
@@ -219,6 +309,7 @@ export function AgentChat({
                 <span>Approval required</span>
                 <h3>{approval.title}</h3>
                 <p>{approval.description}</p>
+                <p className="approvalScope">Project: {projectName}</p>
               </div>
             </div>
 
@@ -267,32 +358,46 @@ export function AgentChat({
             <span>{error}</span>
           </div>
         )}
-        <div ref={messageEndRef} />
       </div>
 
       <form className="chatComposer" onSubmit={submit}>
         <div className="composerField">
           <textarea
             aria-label="Message DevPilot"
-            disabled={loading || pendingApproval !== null || resolvingRequestId !== null}
+            disabled={loadingHistory || pendingApproval !== null || resolvingRequestId !== null}
             maxLength={2000}
             onChange={(event) => setInput(event.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder={pendingApproval ? "Review the pending action first" : "Ask about this project"}
-            rows={2}
+            placeholder={
+              loadingHistory
+                ? "Loading conversation"
+                : pendingApproval
+                  ? "Review the pending action first"
+                  : "Ask about this project"
+            }
+            ref={inputRef}
+            rows={1}
             value={input}
           />
           <button
             aria-label="Send message"
             className="sendButton"
-            disabled={!input.trim() || loading || pendingApproval !== null || resolvingRequestId !== null}
+            disabled={
+              !input.trim()
+              || loading
+              || loadingHistory
+              || pendingApproval !== null
+              || resolvingRequestId !== null
+            }
             type="submit"
           >
             <Icon name="arrowUp" size={18} />
           </button>
         </div>
         <p>
-          {pendingApproval
+          {loadingHistory
+            ? "Loading the latest messages for this project"
+            : pendingApproval
             ? "Approve or reject the action to continue"
             : "Enter to send, Shift + Enter for a new line"}
         </p>

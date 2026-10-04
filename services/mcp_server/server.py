@@ -1,14 +1,46 @@
+import hmac
+import os
 from mcp.server import MCPServer
+from mcp.server.mcpserver import Context
 from typing import Literal
 from services.mcp_server.database import supabase
 from datetime import date
-from services.mcp_server.github_client import github_get
+from starlette.responses import JSONResponse
+from services.mcp_server.github_client import github_get_for_project
 
 
+
+MCP_INTERNAL_SECRET = os.getenv(
+    "MCP_INTERNAL_SECRET",
+    os.getenv("APP_SESSION_SECRET", ""),
+)
 
 mcp = MCPServer("DevPilot MCP")
 Status = Literal["todo", "in_progress", "blocked", "done"]
 Priority = Literal["low", "medium", "high", "critical"]
+
+
+def get_active_project_id(ctx: Context) -> str:
+    request = ctx.request_context.request
+    headers = getattr(request, "headers", None)
+    project_id = headers.get("x-devpilot-project-id") if headers else None
+    user_id = headers.get("x-devpilot-user-id") if headers else None
+    if not project_id or not user_id:
+        raise ValueError("The active project scope is missing")
+
+    rows = (
+        supabase.table("projects")
+        .select("id")
+        .eq("id", project_id)
+        .eq("user_id", user_id)
+        .is_("github_access_revoked_at", "null")
+        .limit(1)
+        .execute()
+        .data
+    )
+    if not rows:
+        raise ValueError("The active project is not available to this user")
+    return project_id
 
 
 @mcp.tool()
@@ -18,8 +50,12 @@ def ping() -> dict:
 
 
 @mcp.tool()
-def get_project_tasks( project_id: str, status: Status | None = None) -> list[dict]:
+def get_project_tasks(
+    ctx: Context,
+    status: Status | None = None,
+) -> list[dict]:
     """Return tasks for a project. Optionally filter by task status."""
+    project_id = get_active_project_id(ctx)
     query = (
         supabase.table("tasks")
         .select("id,title,description,status,priority,due_date")
@@ -34,8 +70,9 @@ def get_project_tasks( project_id: str, status: Status | None = None) -> list[di
 
 
 @mcp.tool()
-def get_overdue_tasks(project_id: str) -> list[dict]:
+def get_overdue_tasks(ctx: Context) -> list[dict]:
     """Return incomplete project tasks whose due date is before today."""
+    project_id = get_active_project_id(ctx)
     return (
         supabase.table("tasks")
         .select("id,title,status,priority,due_date")
@@ -50,13 +87,14 @@ def get_overdue_tasks(project_id: str) -> list[dict]:
 
 @mcp.tool()
 def create_task(
-    project_id: str,
     title: str,
+    ctx: Context,
     description: str | None = None,
     priority: Priority = "medium",
     due_date: str | None = None,
 ) -> dict:
     """Create a task for a project and return the created record."""
+    project_id = get_active_project_id(ctx)
     payload = {
         "project_id": project_id,
         "title": title,
@@ -69,23 +107,30 @@ def create_task(
 
 
 @mcp.tool()
-def update_task_status(task_id: str, status: Status) -> dict:
+def update_task_status(
+    task_id: str,
+    status: Status,
+    ctx: Context,
+) -> dict:
     """Update the status of an existing project task."""
+    project_id = get_active_project_id(ctx)
     rows = (
         supabase.table("tasks")
         .update({"status": status})
         .eq("id", task_id)
+        .eq("project_id", project_id)
         .execute()
         .data
     )
     if not rows:
-        raise ValueError("Task not found")
+        raise ValueError("Task not found in the active project")
     return rows[0]
 
 
 @mcp.tool()
-def get_project_summary(project_id: str) -> dict:
+def get_project_summary(ctx: Context) -> dict:
     """Return project details and task counts grouped by status."""
+    project_id = get_active_project_id(ctx)
     project_rows = (
         supabase.table("projects")
         .select("id,name,description,github_owner,github_repo")
@@ -128,10 +173,15 @@ def get_repo_for_project(project_id: str) -> tuple[str, str]:
 
 
 @mcp.tool()
-async def get_recent_commits(project_id: str, limit: int = 10) -> list[dict]:
+async def get_recent_commits(
+    ctx: Context,
+    limit: int = 10,
+) -> list[dict]:
     """Return recent commits for the GitHub repository linked to a project."""
+    project_id = get_active_project_id(ctx)
     owner, repo = get_repo_for_project(project_id)
-    data = await github_get(
+    data = await github_get_for_project(
+        project_id,
         f"/repos/{owner}/{repo}/commits",
         params={"per_page": min(limit, 30)},
     )
@@ -148,10 +198,15 @@ async def get_recent_commits(project_id: str, limit: int = 10) -> list[dict]:
 
 
 @mcp.tool()
-async def get_open_issues(project_id: str, limit: int = 20) -> list[dict]:
+async def get_open_issues(
+    ctx: Context,
+    limit: int = 20,
+) -> list[dict]:
     """Return open GitHub issues for the project repository."""
+    project_id = get_active_project_id(ctx)
     owner, repo = get_repo_for_project(project_id)
-    data = await github_get(
+    data = await github_get_for_project(
+        project_id,
         f"/repos/{owner}/{repo}/issues",
         params={"state": "open", "per_page": min(limit, 50)},
     )
@@ -169,10 +224,12 @@ async def get_open_issues(project_id: str, limit: int = 20) -> list[dict]:
 
 
 @mcp.tool()
-async def get_open_pull_requests(project_id: str) -> list[dict]:
+async def get_open_pull_requests(ctx: Context) -> list[dict]:
     """Return currently open pull requests for the project repository."""
+    project_id = get_active_project_id(ctx)
     owner, repo = get_repo_for_project(project_id)
-    data = await github_get(
+    data = await github_get_for_project(
+        project_id,
         f"/repos/{owner}/{repo}/pulls",
         params={"state": "open", "per_page": 20},
     )
@@ -203,22 +260,27 @@ def load_document(project_id: str, kind: str) -> str:
     "project://{project_id}/requirements",
     mime_type="text/markdown",
 )
-def project_requirements(project_id: str) -> str:
+def project_requirements(project_id: str, ctx: Context) -> str:
     """Read the project requirements document."""
+    if project_id != get_active_project_id(ctx):
+        raise ValueError("The requested resource is outside the active project")
     return load_document(project_id, "requirements")
 
 @mcp.resource(
     "project://{project_id}/architecture",
     mime_type="text/markdown",
 )
-def project_architecture(project_id: str) -> str:
+def project_architecture(project_id: str, ctx: Context) -> str:
     """Read the project architecture document."""
+    if project_id != get_active_project_id(ctx):
+        raise ValueError("The requested resource is outside the active project")
     return load_document(project_id, "architecture")
 
 
 @mcp.tool()
-def search_project_docs(project_id: str, query: str) -> list[dict]:
+def search_project_docs(query: str, ctx: Context) -> list[dict]:
     """Search stored project documents for a keyword or short phrase."""
+    project_id = get_active_project_id(ctx)
     rows = (
         supabase.table("project_documents")
         .select("kind,title,content")
@@ -239,4 +301,28 @@ def search_project_docs(project_id: str, query: str) -> list[dict]:
 
 
 
-app = mcp.streamable_http_app()
+transport_app = mcp.streamable_http_app(
+    json_response=True,
+    stateless_http=True,
+)
+
+
+async def app(scope, receive, send):
+    if scope["type"] == "http":
+        headers = {
+            key.decode("latin-1").lower(): value.decode("latin-1")
+            for key, value in scope.get("headers", [])
+        }
+        provided = headers.get("x-devpilot-internal-secret", "")
+        if (
+            not MCP_INTERNAL_SECRET
+            or not hmac.compare_digest(provided, MCP_INTERNAL_SECRET)
+        ):
+            response = JSONResponse(
+                {"detail": "Internal service authentication failed"},
+                status_code=401,
+            )
+            await response(scope, receive, send)
+            return
+
+    await transport_app(scope, receive, send)

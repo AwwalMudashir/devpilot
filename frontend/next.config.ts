@@ -1,7 +1,20 @@
-import type { NextConfig } from "next";
+import type { NextConfig } from "next"
 
 const nextConfig: NextConfig = {
-  /* config options here */
-};
+  async rewrites() {
+    const agentApiUrl = (
+      process.env.AGENT_API_URL ||
+      process.env.NEXT_PUBLIC_AGENT_API_URL ||
+      "http://localhost:8000"
+    ).replace(/\/$/, "")
 
-export default nextConfig;
+    return [
+      {
+        source: "/api/devpilot/:path*",
+        destination: `${agentApiUrl}/:path*`
+      }
+    ]
+  }
+}
+
+export default nextConfig
